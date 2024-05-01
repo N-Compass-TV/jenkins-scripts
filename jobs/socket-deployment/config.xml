@@ -1,0 +1,213 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1400.v7fd111b_ec82f">
+  <actions>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobAction plugin="pipeline-model-definition@2.2184.v0b_358b_953e69"/>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction plugin="pipeline-model-definition@2.2184.v0b_358b_953e69">
+      <jobProperties/>
+      <triggers/>
+      <parameters/>
+      <options/>
+    </org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction>
+  </actions>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>BRANCH_TO_BUILD</name>
+          <defaultValue>master</defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>PORT</name>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>9001</string>
+              <string>9002</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>API_ENDPOINT</name>
+          <defaultValue>https://dev-api.n-compass.online/api</defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@3883.vb_3ff2a_e3eea_f">
+    <script>pipeline {
+    agent any
+    
+    environment {
+        AWS_ACCOUNT_ID = &quot;${env.AWS_ACCOUNT_ID}&quot;
+        VPC_ID = &quot;${env.VPC_ID}&quot;
+        CODECOMMIT_REPO_URL = &apos;https://git-codecommit.us-east-1.amazonaws.com/v1/repos/ncompasstv-socketserver&apos;
+        DOCKER_IMAGE_NAME = &apos;ncompasstv-socket&apos;
+        DOCKER_IMAGE_TAG = &quot;${params.PORT}&quot;
+        PORT = &quot;${params.PORT}&quot;
+        API_ENDPOINT = &quot;${params.API_ENDPOINT}&quot;
+        AWS_DEFAULT_REGION = &quot;${env.AWS_DEFAULT_REGION}&quot;
+        AWS_ACCESS_KEY_ID = &quot;${env.AWS_ACCESS_KEY_ID}&quot;
+        AWS_SECRET_ACCESS_KEY = &quot;${env.AWS_SECRET_ACCESS_KEY}&quot;
+        IP_ADDRESS = &quot;${env.IP_ADDRESS}&quot;
+        CONTAINER_NAME = &quot;socket&quot; + &quot;${params.PORT}&quot;
+        LOADBALANCER_ARN = &quot;arn:aws:elasticloadbalancing:us-east-1:335883086205:loadbalancer/app/nc-socket-dev/1e6ebc53e198d280&quot;
+    }
+    
+
+    stages {
+        
+        stage(&apos;CHECKOUT&apos;) {
+            steps {
+                script {
+                    // Use CodeCommit credentials for Git checkout
+                    withCredentials([usernamePassword(credentialsId: &apos;aws-codecommit-credentials&apos;, usernameVariable: &apos;CODECOMMIT_USERNAME&apos;, passwordVariable: &apos;CODECOMMIT_PASSWORD&apos;)]) {
+                        git credentialsId: &apos;aws-codecommit-credentials&apos;, url: CODECOMMIT_REPO_URL, branch: params.BRANCH_TO_BUILD
+                    }
+                    //sh &quot;echo Checkout&quot;
+                }
+            }
+        }
+        
+
+        stage(&apos;BUILD&apos;) {
+            steps {
+               script {
+                   
+                    // Assuming your project has a Dockerfile in the root directory
+                    docker.build(&quot;${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}&quot;)
+                    //sh &quot;echo Build&quot;
+                }
+            }
+        }
+        
+        stage(&apos;Delete ALB Listener&apos;) {
+            steps {
+                script {
+                    // Define Python script
+                    def pythonScript = &quot;&quot;&quot;
+import boto3
+
+def delete_listener(load_balancer_arn, port):
+    elbv2 = boto3.client(&quot;elbv2&quot;)
+
+    # Describe listeners to find the ARN of the listener by port
+    response = elbv2.describe_listeners(LoadBalancerArn=load_balancer_arn)
+    
+    print(response[&quot;Listeners&quot;])
+
+    # Search for the listener with the specified port
+    for listener in response[&quot;Listeners&quot;]:
+        print(listener[&quot;Port&quot;], &quot;=&gt;&quot;, port)
+        if listener[&quot;Port&quot;] == port:
+            listener_arn = listener[&quot;ListenerArn&quot;]
+            print(&quot;Deleting listener with ARN: {listener_arn}&quot;)
+            
+            # Delete the listener
+            elbv2.delete_listener(ListenerArn=listener_arn)
+            print(&quot;Listener deleted successfully.&quot;)
+            return
+
+    print(&quot;Listener with specified port not found.&quot;)
+
+# Replace &apos;your-load-balancer-arn&apos; with the name of your load balancer
+load_balancer_arn = &quot;${LOADBALANCER_ARN}&quot;
+# Replace &apos;your-listener-port&apos; with the port of the listener you want to delete
+listener_port = ${PORT}
+
+delete_listener(load_balancer_arn, listener_port)
+                    &quot;&quot;&quot;
+
+                    // Execute Python script
+                    sh &quot;&quot;&quot;
+echo &apos;&apos;&apos;${pythonScript}&apos;&apos;&apos; &gt; delete_listener.py
+pip install boto3
+python3 delete_listener.py
+                    &quot;&quot;&quot;
+                }
+            }
+        }
+        
+        
+        stage(&apos;ATTACH TO LOAD BALANCER&apos;) {
+
+            steps {
+                script {
+                    def TG_NAME = &quot;tg-socket-${PORT}&quot;
+                    
+                    sh &quot;&quot;&quot;
+                        aws elbv2 create-target-group \
+                            --name ${TG_NAME} \
+                            --protocol HTTP \
+                            --port ${PORT} \
+                            --target-type ip \
+                            --vpc-id ${VPC_ID} \
+                            --health-check-path /api/values
+                    &quot;&quot;&quot;
+                    
+                    def CMD_TG_ARN = &quot;&quot;&quot;
+                        aws elbv2 describe-target-groups \
+                            --query &quot;TargetGroups[?TargetGroupName==&apos;${TG_NAME}&apos;].TargetGroupArn&quot; \
+                            --output text
+                    &quot;&quot;&quot;
+                    def TG_ARN = sh(script: CMD_TG_ARN, returnStdout: true).trim()
+                    
+                    sh &quot;&quot;&quot;
+                        aws elbv2 register-targets \
+                            --target-group-arn ${TG_ARN} \
+                            --targets Id=${IP_ADDRESS}
+                    &quot;&quot;&quot;
+                    
+                    sh &quot;&quot;&quot;
+                        aws elbv2 create-listener \
+                            --load-balancer-arn ${LOADBALANCER_ARN} \
+                            --protocol HTTPS \
+                            --port ${PORT} \
+                            --certificates CertificateArn=arn:aws:acm:us-east-1:335883086205:certificate/80bc7f1b-9c1f-4ebd-b70a-1ebe672af3af \
+                            --ssl-policy ELBSecurityPolicy-TLS13-1-2-2021-06 \
+                            --default-actions Type=forward,TargetGroupArn=${TG_ARN}
+                    &quot;&quot;&quot;
+                }
+            }
+        }
+        
+        stage(&apos;DEPLOY CONTAINER&apos;) {
+            steps {
+                
+                //Removing existing container if there is
+                sh &quot;docker rm -f ${CONTAINER_NAME}&quot;
+                
+                // Add your deployment steps here
+                sh &quot;&quot;&quot;
+                    docker run -d -p ${PORT}:80 \
+                        -eAPI_DEV=${API_ENDPOINT} \
+                        -eNODE_ENV=dev \
+                        -eREDIS_DEV=redis.nc.internal \
+                        -ePORT=80 \
+                        -eREDIS_PORT=6379 \
+                        --name ${CONTAINER_NAME} \
+                        ${DOCKER_IMAGE_NAME}:${PORT}
+                &quot;&quot;&quot;
+                //sh &quot;echo Deploy&quot;
+            }
+        }
+
+    }
+    
+    post {
+        success {
+            echo &apos;Build and deployment successful!&apos;
+        }
+        failure {
+            echo &apos;Build or deployment failed!&apos;
+        }
+    }
+}
+</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

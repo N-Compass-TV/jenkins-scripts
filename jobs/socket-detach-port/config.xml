@@ -1,0 +1,133 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1400.v7fd111b_ec82f">
+  <actions>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobAction plugin="pipeline-model-definition@2.2184.v0b_358b_953e69"/>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction plugin="pipeline-model-definition@2.2184.v0b_358b_953e69">
+      <jobProperties/>
+      <triggers/>
+      <parameters/>
+      <options/>
+    </org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction>
+  </actions>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>PORT</name>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>9001</string>
+              <string>9002</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@3883.vb_3ff2a_e3eea_f">
+    <script>pipeline {
+    agent any
+    
+    environment {
+        AWS_ACCOUNT_ID = &quot;${env.AWS_ACCOUNT_ID}&quot;
+        VPC_ID = &quot;${env.VPC_ID}&quot;
+        PORT = &quot;${params.PORT}&quot;
+        AWS_DEFAULT_REGION = &quot;${env.AWS_DEFAULT_REGION}&quot;
+        AWS_ACCESS_KEY_ID = &quot;${env.AWS_ACCESS_KEY_ID}&quot;
+        AWS_SECRET_ACCESS_KEY = &quot;${env.AWS_SECRET_ACCESS_KEY}&quot;
+        CONTAINER_NAME = &quot;api&quot; + &quot;${params.PORT}&quot;
+        LOADBALANCER_ARN = &quot;arn:aws:elasticloadbalancing:us-east-1:335883086205:loadbalancer/app/nc-socket-dev/1e6ebc53e198d280&quot;
+        TARGET_GROUP_NAME = &quot;tg-socket-&quot; + &quot;${params.PORT}&quot;
+    }
+
+    stages {
+        
+        stage(&apos;Delete ALB Listener&apos;) {
+            steps {
+                script {
+                    // Define Python script
+                    def pythonScript = &quot;&quot;&quot;
+import boto3
+
+def delete_listener(load_balancer_arn, port):
+    elbv2 = boto3.client(&quot;elbv2&quot;)
+
+    # Describe listeners to find the ARN of the listener by port
+    response = elbv2.describe_listeners(LoadBalancerArn=load_balancer_arn)
+    
+    print(response[&quot;Listeners&quot;])
+
+    # Search for the listener with the specified port
+    for listener in response[&quot;Listeners&quot;]:
+        print(listener[&quot;Port&quot;], &quot;=&gt;&quot;, port)
+        if listener[&quot;Port&quot;] == port:
+            listener_arn = listener[&quot;ListenerArn&quot;]
+            print(&quot;Deleting listener with ARN: {listener_arn}&quot;)
+            
+            # Delete the listener
+            elbv2.delete_listener(ListenerArn=listener_arn)
+            print(&quot;Listener deleted successfully.&quot;)
+            return
+
+    print(&quot;Listener with specified port not found.&quot;)
+
+# Replace &apos;your-load-balancer-arn&apos; with the name of your load balancer
+load_balancer_arn = &quot;${LOADBALANCER_ARN}&quot;
+# Replace &apos;your-listener-port&apos; with the port of the listener you want to delete
+listener_port = ${PORT}
+
+delete_listener(load_balancer_arn, listener_port)
+                    &quot;&quot;&quot;
+
+                    // Execute Python script
+                    sh &quot;&quot;&quot;
+echo &apos;&apos;&apos;${pythonScript}&apos;&apos;&apos; &gt; delete_listener.py
+pip install boto3
+python3 delete_listener.py
+                    &quot;&quot;&quot;
+                }
+            }
+        }
+        
+        stage(&apos;Delete Target Group&apos;) {
+            steps {
+                script {
+                    // Find Target Group ARN by Name
+                    def targetGroupArn = sh(
+                        script: &quot;aws elbv2 describe-target-groups --names &apos;${env.TARGET_GROUP_NAME}&apos; --query &apos;TargetGroups[0].TargetGroupArn&apos; --output text&quot;,
+                        returnStdout: true
+                    ).trim()
+
+                    // Delete Target Group by ARN
+                    sh &quot;aws elbv2 delete-target-group --target-group-arn &apos;${targetGroupArn}&apos;&quot;
+                }
+            }
+        }
+        
+        stage(&apos;REMOVE CONTAINER&apos;) {
+            steps {
+                
+                //Removing existing container if there is
+                sh &quot;docker rm -f ${CONTAINER_NAME}&quot;
+            }
+        }
+
+    }
+    
+    post {
+        success {
+            echo &apos;Detach successful!&apos;
+        }
+        failure {
+            echo &apos;Detach failed!&apos;
+        }
+    }
+}
+</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
