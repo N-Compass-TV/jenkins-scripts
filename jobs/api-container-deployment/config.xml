@@ -16,8 +16,8 @@
   <properties>
     <jenkins.model.BuildDiscarderProperty>
       <strategy class="hudson.tasks.LogRotator">
-        <daysToKeep>5</daysToKeep>
-        <numToKeep>30</numToKeep>
+        <daysToKeep>1</daysToKeep>
+        <numToKeep>10</numToKeep>
         <artifactDaysToKeep>-1</artifactDaysToKeep>
         <artifactNumToKeep>-1</artifactNumToKeep>
       </strategy>
@@ -30,21 +30,10 @@
           <defaultValue>master</defaultValue>
           <trim>false</trim>
         </hudson.model.StringParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>PORT</name>
-          <choices class="java.util.Arrays$ArrayList">
-            <a class="string-array">
-              <string>8001</string>
-              <string>8002</string>
-              <string>8003</string>
-              <string>8004</string>
-              <string>8005</string>
-              <string>8006</string>
-              <string>8007</string>
-              <string>8008</string>
-            </a>
-          </choices>
-        </hudson.model.ChoiceParameterDefinition>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
@@ -56,7 +45,7 @@
         AWS_ACCOUNT_ID = &quot;${env.AWS_ACCOUNT_ID}&quot;
         VPC_ID = &quot;${env.VPC_ID}&quot;
         CODECOMMIT_REPO_URL = &apos;https://git-codecommit.us-east-1.amazonaws.com/v1/repos/ncompasstv-api&apos;
-        DOCKER_IMAGE_NAME = &apos;ncompasstv-api&apos;
+        DOCKER_IMAGE_NAME = &apos;335883086205.dkr.ecr.us-east-1.amazonaws.com/ncompasstv-api&apos;
         DOCKER_IMAGE_TAG = &quot;${params.PORT}&quot;
         PORT = &quot;${params.PORT}&quot;
         AWS_DEFAULT_REGION = &quot;${env.AWS_DEFAULT_REGION}&quot;
@@ -65,6 +54,11 @@
         IP_ADDRESS = &quot;${env.IP_ADDRESS}&quot;
         CONTAINER_NAME = &quot;api&quot; + &quot;${params.PORT}&quot;
         LOADBALANCER_ARN = &quot;arn:aws:elasticloadbalancing:us-east-1:335883086205:loadbalancer/app/nc-alb-dev/e42f62ce34c0f13e&quot;
+        SSH_CREDENTIALS_ID = &quot;nctv-private-ssh&quot;
+        REMOTE_SERVER = &quot;172.10.30.105&quot;
+        REMOTE_USER = &quot;ubuntu&quot;
+        PEM_FILE_PATH = &quot;/var/lib/jenkins/.ssh/nc-nvir-bastion-dev-key.pem&quot;
+        AWS_CREDENTIALS_ID = &apos;aws-credentials&apos;
     }
     
     parameters {
@@ -73,7 +67,7 @@
 
     stages {
         
-        stage(&apos;CHECKOUT&apos;) {
+         stage(&apos;CHECKOUT&apos;) {
             steps {
                 script {
                     // Use CodeCommit credentials for Git checkout
@@ -91,13 +85,37 @@
                script {
                    
                     // Assuming your project has a Dockerfile in the root directory
-                    docker.build(&quot;${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}&quot;)
+                    dockerImage = docker.build(&quot;${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}&quot;)
                     //sh &quot;echo Build&quot;
                 }
             }
         }
         
-        stage(&apos;Delete ALB Listener&apos;) {
+        stage(&apos;ECR LOGIN&apos;) {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        sh &apos;aws --version&apos;
+                        sh &quot;aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_IMAGE_NAME}:${PORT}&quot;
+                    }
+                }
+            }
+        }
+        
+        stage(&apos;PUSH&apos;) {
+            steps {
+                script {
+                    dockerImage.push()
+                }
+            }
+        }
+        
+        stage(&apos;DELETE LISTENER&apos;) {
             steps {
                 script {
                     // Define Python script
@@ -145,7 +163,7 @@ python3 delete_listener.py
         }
         
         
-        stage(&apos;ATTACH TO LOAD BALANCER&apos;) {
+        stage(&apos;ATTACH TO ALB&apos;) {
             steps {
                 script {
                     def TG_NAME = &quot;tg-api-${PORT}&quot;
@@ -170,7 +188,7 @@ python3 delete_listener.py
                     sh &quot;&quot;&quot;
                         aws elbv2 register-targets \
                             --target-group-arn ${TG_ARN} \
-                            --targets Id=${IP_ADDRESS}
+                            --targets Id=${REMOTE_SERVER}
                     &quot;&quot;&quot;
                     
                     sh &quot;&quot;&quot;
@@ -185,30 +203,59 @@ python3 delete_listener.py
                 }
             }
         }
-        
-        stage(&apos;DEPLOY CONTAINER&apos;) {
+
+        stage(&apos;ECR LOGIN REMOTE&apos;) {
             steps {
-                
-                //Removing existing container if there is
-                sh &quot;docker rm -f ${CONTAINER_NAME}&quot;
-                
-                // Add your deployment steps here
-                sh &quot;&quot;&quot;
-                    docker run -d -p ${PORT}:80 \
-                        -eDB_CONNECTION=N-CompassDB-new \
-                        -eAPI_ENV=dev \
-                        -eAWS_ACCESS_KEY=${AWS_ACCESS_KEY_ID} \
-                        -eAWS_ACCESS_SECRET_KEY=${AWS_SECRET_ACCESS_KEY} \
-                        -eAWS_IMAGE_BUCKET=nctv-images-dev \
-                        -eAWS_IMAGE_BUCKET_URL=https://nctv-images-dev.s3.amazonaws.com \
-                        -eAWS_SQS_URL=https://sqs.us-east-1.amazonaws.com/335883086205/nctv-screenshots \
-                        --name ${CONTAINER_NAME} \
-                        ${DOCKER_IMAGE_NAME}:${PORT}
-                &quot;&quot;&quot;
-                //sh &quot;echo Deploy&quot;
+
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        
+                        sshCommand remote: [
+                            name: &apos;remote-server&apos;,
+                            host: REMOTE_SERVER,
+                            user: &apos;ubuntu&apos;, // Replace with your actual SSH username
+                            identityFile: PEM_FILE_PATH,
+                            allowAnyHosts: true
+                        ], command: &quot;&quot;&quot;
+                            # Set AWS credentials as environment variables
+                            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+
+                            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_IMAGE_NAME}:${PORT}
+                        &quot;&quot;&quot;
+                    }
+                }
             }
         }
-
+        
+        stage(&apos;DEPLOY&apos;) {
+            steps {
+                script {
+                    try {
+                        // Execute a series of commands on the remote server
+                        sshCommand remote: [
+                            name: &apos;remote-server&apos;,
+                            host: REMOTE_SERVER,
+                            user: &apos;ubuntu&apos;, // Replace with your actual SSH username
+                            identityFile: PEM_FILE_PATH,
+                            allowAnyHosts: true
+                        ], command: &quot;&quot;&quot;
+                            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_IMAGE_NAME}:${PORT}
+                            docker rm -f ${CONTAINER_NAME}
+                            docker run -d -p ${PORT}:80 -eDB_CONNECTION=N-CompassDB-new -eAPI_ENV=dev -eAWS_ACCESS_KEY=${AWS_ACCESS_KEY_ID} -eAWS_ACCESS_SECRET_KEY=${AWS_SECRET_ACCESS_KEY} -eAWS_IMAGE_BUCKET=nctv-images-dev -eAWS_IMAGE_BUCKET_URL=https://nctv-images-dev.s3.amazonaws.com -eAWS_SQS_URL=https://sqs.us-east-1.amazonaws.com/335883086205/nctv-screenshots --name ${CONTAINER_NAME} ${DOCKER_IMAGE_NAME}:${PORT}
+                        &quot;&quot;&quot;
+                    } catch (Exception e) {
+                        error &quot;Failed to execute commands via SSH: ${e.message}&quot;
+                    }
+                }
+            }
+        }
+        
     }
     
     post {
