@@ -1,0 +1,308 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1426.v2ecb_a_a_42fd46">
+  <actions>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobAction plugin="pipeline-model-definition@2.2198.v41dd8ef6dd56"/>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction plugin="pipeline-model-definition@2.2198.v41dd8ef6dd56">
+      <jobProperties/>
+      <triggers/>
+      <parameters>
+        <string>BRANCH_TO_BUILD</string>
+      </parameters>
+      <options/>
+    </org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction>
+  </actions>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>5</daysToKeep>
+        <numToKeep>30</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>-1</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>BRANCH_TO_BUILD</name>
+          <description>Enter the branch name to build</description>
+          <defaultValue>master</defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>PORT</name>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>8001</string>
+              <string>8002</string>
+              <string>8003</string>
+              <string>8004</string>
+              <string>8005</string>
+              <string>8006</string>
+              <string>8007</string>
+              <string>8008</string>
+              <string>8009</string>
+              <string>8010</string>
+              <string>8011</string>
+              <string>8012</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@3894.3896.vca_2c931e7935">
+    <script>pipeline {
+    agent any
+    
+    environment {
+        VPC_ID = &quot;vpc-06badfe69659e2ce9&quot;
+        AWS_REGION = &apos;us-east-1&apos;
+        CODECOMMIT_REPO_URL = &apos;ssh://APKA47SOYMRPVGHU5IOX@git-codecommit.us-east-1.amazonaws.com/v1/repos/ncompasstv-api&apos;
+        DOCKER_IMAGE_NAME = &apos;335883086205.dkr.ecr.us-east-1.amazonaws.com/ncompasstv-api&apos;
+        DOCKER_IMAGE_TAG = &quot;${params.PORT}&quot;
+        PORT = &quot;${params.PORT}&quot;
+        IP_ADDRESS = &quot;${env.IP_ADDRESS}&quot;
+        CONTAINER_NAME = &quot;api&quot; + &quot;${params.PORT}&quot;
+        LOADBALANCER_ARN = &quot;arn:aws:elasticloadbalancing:us-east-1:335883086205:loadbalancer/app/nc-alb-dev/e42f62ce34c0f13e&quot;
+        SSH_CREDENTIALS_ID = &quot;nctv-private-ssh&quot;
+        REMOTE_SERVER = &quot;172.10.30.105&quot;
+        REMOTE_USER = &quot;ubuntu&quot;
+        PEM_FILE_PATH = &quot;/var/lib/jenkins/.ssh/nc-nvir-bastion-dev-key.pem&quot;
+        AWS_CREDENTIALS_ID = &apos;aws-credentials&apos;
+        AWS_CODECOMMIT_SSH = &apos;aws-codecommit-ssh&apos;
+    }
+    
+    parameters {
+        string(name: &apos;BRANCH_TO_BUILD&apos;, defaultValue: &apos;master&apos;, description: &apos;Enter the branch name to build&apos;)
+    }
+
+    stages {
+        
+        stage(&apos;CHECKOUT&apos;) {
+            steps {
+                // Checkout the main branch
+                script {
+                    git branch: params.BRANCH_TO_BUILD, credentialsId: AWS_CODECOMMIT_SSH, url: CODECOMMIT_REPO_URL
+                }
+            }
+        }
+        
+
+        stage(&apos;BUILD&apos;) {
+            steps {
+               script {
+                   
+                    // Assuming your project has a Dockerfile in the root directory
+                    dockerImage = docker.build(&quot;${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}&quot;)
+                    //sh &quot;echo Build&quot;
+                }
+            }
+        }
+        
+        stage(&apos;ECR LOGIN&apos;) {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        sh &apos;aws --version&apos;
+                        sh &quot;aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_IMAGE_NAME}:${PORT}&quot;
+                    }
+                }
+            }
+        }
+        
+        stage(&apos;PUSH&apos;) {
+            steps {
+                script {
+                    dockerImage.push()
+                }
+            }
+        }
+
+        
+        stage(&apos;DELETE LISTENER&apos;) {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        // Define Python script
+                    def pythonScript = &quot;&quot;&quot;
+import boto3
+
+def delete_listener(load_balancer_arn, port):
+    elbv2 = boto3.client(&quot;elbv2&quot;, region_name=&quot;${AWS_REGION}&quot;)
+
+    # Describe listeners to find the ARN of the listener by port
+    response = elbv2.describe_listeners(LoadBalancerArn=load_balancer_arn)
+    
+    print(response[&quot;Listeners&quot;])
+
+    # Search for the listener with the specified port
+    for listener in response[&quot;Listeners&quot;]:
+        print(listener[&quot;Port&quot;], &quot;=&gt;&quot;, port)
+        if listener[&quot;Port&quot;] == port:
+            listener_arn = listener[&quot;ListenerArn&quot;]
+            print(&quot;Deleting listener with ARN: {listener_arn}&quot;)
+            
+            # Delete the listener
+            elbv2.delete_listener(ListenerArn=listener_arn)
+            print(&quot;Listener deleted successfully.&quot;)
+            return
+
+    print(&quot;Listener with specified port not found.&quot;)
+
+# Replace &apos;your-load-balancer-arn&apos; with the name of your load balancer
+load_balancer_arn = &quot;${LOADBALANCER_ARN}&quot;
+# Replace &apos;your-listener-port&apos; with the port of the listener you want to delete
+listener_port = ${PORT}
+
+delete_listener(load_balancer_arn, listener_port)
+                    &quot;&quot;&quot;
+
+                    // Execute Python script
+                    sh &quot;&quot;&quot;
+echo &apos;&apos;&apos;${pythonScript}&apos;&apos;&apos; &gt; delete_listener.py
+pip install --break-system-packages boto3
+python3 delete_listener.py
+                    &quot;&quot;&quot;
+                    }
+                }
+            }
+        }
+        
+        stage(&apos;ECR TO ALB&apos;) {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        def TG_NAME = &quot;tg-api-${PORT}&quot;
+                        
+                        sh &quot;&quot;&quot;
+                            aws elbv2 create-target-group \
+                                --name ${TG_NAME} \
+                                --protocol HTTP \
+                                --port ${PORT} \
+                                --target-type ip \
+                                --vpc-id ${VPC_ID} \
+                                --health-check-path /api/values
+                        &quot;&quot;&quot;
+                        
+                        def CMD_TG_ARN = &quot;&quot;&quot;
+                            aws elbv2 describe-target-groups \
+                                --query &quot;TargetGroups[?TargetGroupName==&apos;${TG_NAME}&apos;].TargetGroupArn&quot; \
+                                --output text
+                        &quot;&quot;&quot;
+                        def TG_ARN = sh(script: CMD_TG_ARN, returnStdout: true).trim()
+                        
+                        sh &quot;&quot;&quot;
+                            aws elbv2 register-targets \
+                                --target-group-arn ${TG_ARN} \
+                                --targets Id=${REMOTE_SERVER}
+                        &quot;&quot;&quot;
+                        
+                        sh &quot;&quot;&quot;
+                            aws elbv2 create-listener \
+                                --load-balancer-arn &quot;${LOADBALANCER_ARN}&quot; \
+                                --protocol HTTPS \
+                                --port ${PORT} \
+                                --certificates CertificateArn=arn:aws:acm:us-east-1:335883086205:certificate/80bc7f1b-9c1f-4ebd-b70a-1ebe672af3af \
+                                --ssl-policy ELBSecurityPolicy-TLS13-1-2-2021-06 \
+                                --default-actions Type=forward,TargetGroupArn=${TG_ARN}
+                        &quot;&quot;&quot;
+                    }
+                }
+            }
+        }
+        
+
+        stage(&apos;ECR LOGIN REMOTE&apos;) {
+            steps {
+
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        
+                        sshCommand remote: [
+                            name: &apos;remote-server&apos;,
+                            host: REMOTE_SERVER,
+                            user: &apos;ubuntu&apos;, // Replace with your actual SSH username
+                            identityFile: PEM_FILE_PATH,
+                            allowAnyHosts: true
+                        ], command: &quot;&quot;&quot;
+                            # Set AWS credentials as environment variables
+                            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+
+                            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_IMAGE_NAME}:${PORT}
+                        &quot;&quot;&quot;
+                    }
+                }
+            }
+        }
+        
+        stage(&apos;DEPLOY&apos;) {
+            steps {
+                script {
+                    try {
+                        withCredentials([[
+                            $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                            credentialsId: AWS_CREDENTIALS_ID,
+                            accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                            secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                        ]]) {
+                            // Execute a series of commands on the remote server
+                            sshCommand remote: [
+                                name: &apos;remote-server&apos;,
+                                host: REMOTE_SERVER,
+                                user: &apos;ubuntu&apos;, // Replace with your actual SSH username
+                                identityFile: PEM_FILE_PATH,
+                                allowAnyHosts: true
+                            ], command: &quot;&quot;&quot;
+                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_IMAGE_NAME}:${PORT}
+                                docker rm -f ${CONTAINER_NAME}
+                                docker pull ${DOCKER_IMAGE_NAME}:${PORT}
+                                docker run -d -p ${PORT}:80 -eDB_CONNECTION=N-CompassDB-new -eAPI_ENV=dev -eAWS_ACCESS_KEY=${AWS_ACCESS_KEY_ID} -eAWS_ACCESS_SECRET_KEY=${AWS_SECRET_ACCESS_KEY} -eAWS_IMAGE_BUCKET=nctv-images-dev -eAWS_IMAGE_BUCKET_URL=https://nctv-images-dev.s3.amazonaws.com -eAWS_SQS_URL=https://sqs.us-east-1.amazonaws.com/335883086205/nctv-screenshots --name ${CONTAINER_NAME} ${DOCKER_IMAGE_NAME}:${PORT}
+                            &quot;&quot;&quot;
+                        }
+                    } catch (Exception e) {
+                        error &quot;Failed to execute commands via SSH: ${e.message}&quot;
+                    }
+                }
+            }
+        }
+        
+    }
+    
+    post {
+        success {
+            echo &apos;Build and deployment successful!&apos;
+        }
+        failure {
+            echo &apos;Build or deployment failed!&apos;
+        }
+    }
+}
+</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

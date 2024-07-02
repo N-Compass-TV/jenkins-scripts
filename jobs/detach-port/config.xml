@@ -1,0 +1,256 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1426.v2ecb_a_a_42fd46">
+  <actions>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobAction plugin="pipeline-model-definition@2.2198.v41dd8ef6dd56"/>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction plugin="pipeline-model-definition@2.2198.v41dd8ef6dd56">
+      <jobProperties/>
+      <triggers/>
+      <parameters/>
+      <options/>
+    </org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction>
+  </actions>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>-1</daysToKeep>
+        <numToKeep>10</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>-1</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>PORT</name>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@3894.3896.vca_2c931e7935">
+    <script>pipeline {
+    agent any
+    
+    environment {
+        VPC_ID = &quot;vpc-06badfe69659e2ce9&quot;
+        AWS_REGION = &apos;us-east-1&apos;
+        PORT = &quot;${params.PORT}&quot;
+        CONTAINER_NAME_API = &quot;api&quot; + &quot;${params.PORT}&quot;
+        CONTAINER_NAME_SOCKET = &quot;socket&quot; + &quot;${params.PORT}&quot;
+        LOADBALANCER_ARN_API = &quot;arn:aws:elasticloadbalancing:us-east-1:335883086205:loadbalancer/app/nc-alb-dev/e42f62ce34c0f13e&quot;
+        LOADBALANCER_ARN_SOCKET = &quot;arn:aws:elasticloadbalancing:us-east-1:335883086205:loadbalancer/app/nc-socket-dev/1e6ebc53e198d280&quot;
+        SSH_CREDENTIALS_ID = &quot;nctv-private-ssh&quot;
+        REMOTE_SERVER = &quot;172.10.30.105&quot;
+        REMOTE_USER = &quot;ubuntu&quot;
+        PEM_FILE_PATH = &quot;/var/lib/jenkins/.ssh/nc-nvir-bastion-dev-key.pem&quot;
+        AWS_CREDENTIALS_ID = &apos;aws-credentials&apos;
+        AWS_CODECOMMIT_SSH = &apos;aws-codecommit-ssh&apos;
+        TARGET_GROUP_NAME_API = &quot;tg-api-&quot; + &quot;${params.PORT}&quot;
+        TARGET_GROUP_NAME_SOCKET = &quot;tg-socket-&quot; + &quot;${params.PORT}&quot;
+    }
+
+    stages {
+        
+        stage(&apos;DELETE LISTENER API&apos;) {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        // Define Python script
+                    def pythonScript = &quot;&quot;&quot;
+import boto3
+
+def delete_listener(load_balancer_arn, port):
+    elbv2 = boto3.client(&quot;elbv2&quot;, region_name=&quot;${AWS_REGION}&quot;)
+
+    # Describe listeners to find the ARN of the listener by port
+    response = elbv2.describe_listeners(LoadBalancerArn=load_balancer_arn)
+    
+    print(response[&quot;Listeners&quot;])
+
+    # Search for the listener with the specified port
+    for listener in response[&quot;Listeners&quot;]:
+        print(listener[&quot;Port&quot;], &quot;=&gt;&quot;, port)
+        if listener[&quot;Port&quot;] == port:
+            listener_arn = listener[&quot;ListenerArn&quot;]
+            print(&quot;Deleting listener with ARN: {listener_arn}&quot;)
+            
+            # Delete the listener
+            elbv2.delete_listener(ListenerArn=listener_arn)
+            print(&quot;Listener deleted successfully.&quot;)
+            return
+
+    print(&quot;Listener with specified port not found.&quot;)
+
+# Replace &apos;your-load-balancer-arn&apos; with the name of your load balancer
+load_balancer_arn = &quot;${LOADBALANCER_ARN_API}&quot;
+# Replace &apos;your-listener-port&apos; with the port of the listener you want to delete
+listener_port = ${PORT}
+
+delete_listener(load_balancer_arn, listener_port)
+                    &quot;&quot;&quot;
+
+                    // Execute Python script
+                    sh &quot;&quot;&quot;
+echo &apos;&apos;&apos;${pythonScript}&apos;&apos;&apos; &gt; delete_listener.py
+pip install --break-system-packages boto3
+python3 delete_listener.py
+                    &quot;&quot;&quot;
+                    }
+                }
+            }
+        }
+        
+        stage(&apos;DELETE LISTENER SOCKET&apos;) {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        // Define Python script
+                    def pythonScript = &quot;&quot;&quot;
+import boto3
+
+def delete_listener(load_balancer_arn, port):
+    elbv2 = boto3.client(&quot;elbv2&quot;, region_name=&quot;${AWS_REGION}&quot;)
+
+    # Describe listeners to find the ARN of the listener by port
+    response = elbv2.describe_listeners(LoadBalancerArn=load_balancer_arn)
+    
+    print(response[&quot;Listeners&quot;])
+
+    # Search for the listener with the specified port
+    for listener in response[&quot;Listeners&quot;]:
+        print(listener[&quot;Port&quot;], &quot;=&gt;&quot;, port)
+        if listener[&quot;Port&quot;] == port:
+            listener_arn = listener[&quot;ListenerArn&quot;]
+            print(&quot;Deleting listener with ARN: {listener_arn}&quot;)
+            
+            # Delete the listener
+            elbv2.delete_listener(ListenerArn=listener_arn)
+            print(&quot;Listener deleted successfully.&quot;)
+            return
+
+    print(&quot;Listener with specified port not found.&quot;)
+
+# Replace &apos;your-load-balancer-arn&apos; with the name of your load balancer
+load_balancer_arn = &quot;${LOADBALANCER_ARN_SOCKET}&quot;
+# Replace &apos;your-listener-port&apos; with the port of the listener you want to delete
+listener_port = ${PORT}
+
+delete_listener(load_balancer_arn, listener_port)
+                    &quot;&quot;&quot;
+
+                    // Execute Python script
+                    sh &quot;&quot;&quot;
+echo &apos;&apos;&apos;${pythonScript}&apos;&apos;&apos; &gt; delete_listener.py
+pip install --break-system-packages boto3
+python3 delete_listener.py
+                    &quot;&quot;&quot;
+                    }
+                }
+            }
+        }
+        
+        stage(&apos;REMOVE TG API&apos;) {
+            steps {
+                script {
+                    
+                        withCredentials([[
+                            $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                            credentialsId: AWS_CREDENTIALS_ID,
+                            accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                            secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                        ]]) {
+                            try {
+                            
+                                // Find Target Group ARN by Name
+                                def targetGroupArnaAPI = sh(
+                                    script: &quot;aws elbv2 describe-target-groups --names &apos;${env.TARGET_GROUP_NAME_API}&apos; --query &apos;TargetGroups[0].TargetGroupArn&apos; --output text&quot;,
+                                    returnStdout: true
+                                ).trim()
+            
+                                // Delete Target Group by ARN
+                                sh &quot;aws elbv2 delete-target-group --target-group-arn &apos;${targetGroupArnaAPI}&apos;&quot;
+                            } catch (Exception e) {
+                                echo &quot;Target Group Not Found!&quot;
+                            }
+                        }
+                }
+            }
+        }
+        
+        stage(&apos;REMOVE TG SOCKET&apos;) {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                        credentialsId: AWS_CREDENTIALS_ID,
+                        accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                        secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                    ]]) {
+                        try {
+                            // Find Target Group ARN by Name
+                            def targetGroupArnSocket = sh(
+                                script: &quot;aws elbv2 describe-target-groups --names &apos;${env.TARGET_GROUP_NAME_SOCKET}&apos; --query &apos;TargetGroups[0].TargetGroupArn&apos; --output text&quot;,
+                                returnStdout: true
+                            ).trim()
+        
+                            // Delete Target Group by ARN
+                            sh &quot;aws elbv2 delete-target-group --target-group-arn &apos;${targetGroupArnSocket}&apos;&quot;
+                        } catch (Exception e) {
+                            echo &quot;Target Group not found&quot;
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage(&apos;DEPLOY&apos;) {
+            steps {
+                script {
+                    try {
+                        // Execute a series of commands on the remote server
+                        sshCommand remote: [
+                            name: &apos;remote-server&apos;,
+                            host: REMOTE_SERVER,
+                            user: &apos;ubuntu&apos;, // Replace with your actual SSH username
+                            identityFile: PEM_FILE_PATH,
+                            allowAnyHosts: true
+                        ], command: &quot;&quot;&quot;
+                            docker rm -f ${CONTAINER_NAME_API}
+                            docker rm -f ${CONTAINER_NAME_SOCKET}
+                        &quot;&quot;&quot;
+                    } catch (Exception e) {
+                        error &quot;Failed to execute commands via SSH: ${e.message}&quot;
+                    }
+                }
+            }
+        }
+        
+    }
+    
+    post {
+        success {
+            echo &apos;Build and deployment successful!&apos;
+        }
+        failure {
+            echo &apos;Build or deployment failed!&apos;
+        }
+    }
+}
+</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

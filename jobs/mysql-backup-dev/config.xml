@@ -1,0 +1,187 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1426.v2ecb_a_a_42fd46">
+  <actions>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobAction plugin="pipeline-model-definition@2.2198.v41dd8ef6dd56"/>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction plugin="pipeline-model-definition@2.2198.v41dd8ef6dd56">
+      <jobProperties/>
+      <triggers/>
+      <parameters/>
+      <options/>
+    </org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction>
+  </actions>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>-1</daysToKeep>
+        <numToKeep>10</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>-1</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@3894.3896.vca_2c931e7935">
+    <script>pipeline {
+    agent any
+    
+    environment {
+        AWS_CREDENTIALS_ID = &apos;aws-credentials&apos;
+        DB_HOST = &quot;nc-nvir-dev-rds-03.coot01xe9yza.us-east-1.rds.amazonaws.com&quot;
+        DB_NAME = &quot;n_compass&quot;
+        AWS_S3_BUCKET = &quot;nc-rds-backup-dev&quot;
+        GZ_FILE_NAME = &quot;backup_${new Date().format(&apos;yyyyMMdd_HHmmss&apos;)}.sql.gz&quot;
+    }
+    
+    stages {
+        
+        stage(&apos;MYSQL BACKUP AND GZIP&apos;) {
+            steps {
+                script {
+                    
+                        withCredentials([[
+                            $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                            credentialsId: AWS_CREDENTIALS_ID,
+                            accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                            secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                        ]]) {
+                            withCredentials([usernamePassword(credentialsId: &apos;mysql-creds-dev&apos;, usernameVariable: &apos;DB_USER&apos;, passwordVariable: &apos;DB_PASSWORD&apos;)]) {
+                                sh &quot;&quot;&quot;
+                                    mysqldump -h ${env.DB_HOST} -u ${DB_USER} -p&apos;${DB_PASSWORD}&apos; n_compass \
+                                    activities \
+                                    advertisers \
+                                    blacklisted_contents \
+                                    categories \
+                                    cities \
+                                    cities_state_data \
+                                    content_spacer_algos \
+                                    content_spacer_categories \
+                                    content_spacer_licenses \
+                                    content_spacer_playlists \
+                                    contents \
+                                    countries \
+                                    dealer_address_books \
+                                    dealer_admins \
+                                    dealer_contract_details \
+                                    dealer_templates \
+                                    dealer_unused_contents \
+                                    dealer_values \
+                                    dealers \
+                                    dealers_contract_files \
+                                    dealers_territory_files \
+                                    dma \
+                                    feed_fillers \
+                                    feed_global_settings \
+                                    feed_news \
+                                    feed_slides \
+                                    feed_types \
+                                    feed_weathers \
+                                    feeds \
+                                    field_group_fields \
+                                    field_group_values \
+                                    field_groups \
+                                    filler_contents \
+                                    filler_group_blacklisted \
+                                    filler_groups \
+                                    filler_logs \
+                                    filler_playlist_contents \
+                                    filler_playlist_dealers \
+                                    filler_playlist_groups \
+                                    filler_playlists \
+                                    global_settings \
+                                    host_field_groups \
+                                    host_files \
+                                    host_support_tickets \
+                                    hosts \
+                                    hosts_import \
+                                    installation_checklist_items \
+                                    installation_checklists \
+                                    license_favorites \
+                                    license_installation_checklists \
+                                    license_playlist_contents \
+                                    license_screens \
+                                    licenses \
+                                    licenses_acquired \
+                                    local_labs \
+                                    notification_logs \
+                                    notifications \
+                                    orders_viewed \
+                                    permissions \
+                                    placer_dumps \
+                                    placers \
+                                    player_app_versions \
+                                    player_apps \
+                                    player_asset_server \
+                                    player_ui \
+                                    playlist_content_credits \
+                                    playlist_contents \
+                                    playlist_contents_schedule \
+                                    playlists \
+                                    purchase_items \
+                                    release_notes \
+                                    roles \
+                                    screen_template_zone_playlists \
+                                    screen_types \
+                                    screens \
+                                    spacer_algorithms \
+                                    spacer_categories \
+                                    spacer_licenses \
+                                    spacers \
+                                    states \
+                                    stripe_users \
+                                    tag_details \
+                                    tag_types \
+                                    tags \
+                                    template_zones \
+                                    templates \
+                                    time_zones \
+                                    tv_brands \
+                                    user_roles \
+                                    users \
+                                    webhooks \
+                                    webhooks_convert \
+                                    host_activity_logs | gzip &gt; ${env.GZ_FILE_NAME}
+                                &quot;&quot;&quot;
+                            }
+                        }
+                }
+            }
+        }
+        
+        stage(&apos;UPLOAD TO S3&apos;) {
+            steps {
+                script {
+                    
+                        withCredentials([[
+                            $class: &apos;AmazonWebServicesCredentialsBinding&apos;, 
+                            credentialsId: AWS_CREDENTIALS_ID,
+                            accessKeyVariable: &apos;AWS_ACCESS_KEY_ID&apos;,
+                            secretKeyVariable: &apos;AWS_SECRET_ACCESS_KEY&apos;
+                        ]]) {
+                            // Upload the gzip file to AWS S3
+                            sh &quot;aws s3 cp ${env.GZ_FILE_NAME} s3://${env.AWS_S3_BUCKET}/&quot;
+                            
+                            //Delete local file
+                            sh &quot;rm  ${env.GZ_FILE_NAME}&quot;
+                        }
+                }
+            }
+        }
+
+    }
+    
+    post {
+        success {
+            echo &apos;Successfully Cleared!&apos;
+        }
+        failure {
+            echo &apos;Failed!&apos;
+        }
+    }
+}
+</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
